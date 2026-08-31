@@ -1,5 +1,39 @@
 # TEST_REPORT.md
 
+## Update: critical interactivity bug found and fixed
+
+A user report ("can't bring a Kukri out even on Manushya") led to finding the
+real root cause: `createKukriSprites()` attached a `pointerdown` handler to
+each Kukri token image but never called `.setInteractive()` on it first, so
+**no Kukri token was ever clickable** - not for entry, not for movement.
+Earlier verification in this project had exercised the human-input flow only
+through direct `GameEngine` method calls (bypassing the click handler
+entirely), which is why this had gone undetected. Fixed by adding
+`.setInteractive({ useHandCursor: true })`, then re-verified with genuine
+Playwright `mouse.click()` calls at the real, live screen position of the
+actual sprite (read from the running scene, not assumed) - both a Manushya
+entry and a subsequent move were confirmed to work end-to-end this way,
+across multiple fresh games, with zero console errors.
+
+While chasing that, a second, subtler issue was found and fixed: opening the
+Settings/How-To-Play overlay calls `scene.pause()`, but Phaser only applies
+a pause on the *next* scene step, not synchronously - so a bot's
+already-scheduled `delayedCall` could still fire and mutate engine state in
+the brief window before the pause actually took effect. Fixed with an
+explicit `overlayOpen` flag set synchronously in the same click handler that
+opens the overlay (rather than relying on `scene.isActive()`), guarded at
+the top of every bot-turn entry point, with a `resume` listener that safely
+re-picks-up an interrupted bot turn. Verified with a targeted synchronous
+test that simulates the exact race (open overlay, then immediately invoke
+the bot step that a stray timer would have fired) and asserts the engine
+state is provably unchanged until resume.
+
+The visual design was also substantially reworked (ornate gold-framed
+dashboard with Gati-dice sidebar, players/last-result/moves/extra-turn
+sidebar, and a Roll/How-To-Play/Surrender footer) and the color palette
+replaced with a brighter, more saturated set, in response to feedback that
+the previous look was too pale/plain for a premium release.
+
 ## Build status
 
 - `npm run build` (tsc --noEmit + vite build): **succeeds**, zero type errors.

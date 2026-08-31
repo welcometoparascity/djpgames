@@ -24,7 +24,7 @@ export class HowToPlayScene extends PagedInfoScene {
       {
         title: 'The Objective',
         lines: [
-          'Guide all four of your Kukri around the Wheel of Existence and',
+          'Guide all four of your Kukri around the board and',
           'into the glowing Moksha hub at the center before your rivals do.',
           'The first player to bring all 4 Kukri home to Moksha wins.',
         ],

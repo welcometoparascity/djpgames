@@ -41,8 +41,13 @@ export const GATI_ICON_COLOR = 0x2a1b3d;
 
 export const GATI_ORDER: readonly GatiName[] = ['Dev', 'Manushya', 'Tiryanch', 'Narak'];
 
+// Wider than tall so GameScene has room for the left/right dashboard
+// sidebars (Gati preview + rule reminder, players/last-result/moves) either
+// side of the board, without changing any board/grid math below (the grid
+// still centers within this canvas - it just now has generous side margins
+// instead of being edge-to-edge).
 export const CANVAS = {
-  width: 1080,
+  width: 1500,
   height: 1080,
 };
 

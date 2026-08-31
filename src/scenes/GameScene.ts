@@ -4,8 +4,10 @@ import type { GatiName, Kukri, MoveOutcome } from '../core/types';
 import { boardPositionFor, hubPoint, yardCenterFor, yardSlotOffset } from '../rendering/boardLayout';
 import { dieGatiKey, dieNormalKey, kukriTextureKey, KUKRI_TOKEN_SIZE } from '../rendering/TextureFactory';
 import { CANVAS, GATI_ORDER, PALETTE, PLAYER_THEMES } from '../config/theme';
+import { drawGatiIcon } from '../rendering/icons';
 import { decideMove, decideYardKukriToEnter } from '../bots/Bot';
 import { audioManager } from '../audio/AudioManager';
+import { Button } from '../ui/Button';
 import type { GameLaunchConfig } from './ModeSelectScene';
 import { AmbientEnvironment } from '../rendering/AmbientEnvironment';
 
@@ -13,6 +15,28 @@ type SelectionMode = 'none' | 'entry' | 'move';
 
 function intToHex(color: number): string {
   return `#${color.toString(16).padStart(6, '0')}`;
+}
+
+/** Ornate double-gold-border rounded panel, used throughout the in-game
+ * dashboard (sidebars, header/footer chips) for a premium framed look. */
+function drawOrnatePanel(g: Phaser.GameObjects.Graphics, x: number, y: number, w: number, h: number, r = 18): void {
+  g.fillStyle(0x000000, 0.3);
+  g.fillRoundedRect(x + 3, y + 5, w, h, r);
+  g.fillStyle(PALETTE.plumDeep, 0.92);
+  g.fillRoundedRect(x, y, w, h, r);
+  g.lineStyle(4, PALETTE.gold, 1);
+  g.strokeRoundedRect(x, y, w, h, r);
+  g.lineStyle(1.5, PALETTE.goldBright, 0.6);
+  g.strokeRoundedRect(x + 5, y + 5, w - 10, h - 10, Math.max(2, r - 5));
+}
+
+interface PlayerRow {
+  bg: Phaser.GameObjects.Graphics;
+  avatar: Phaser.GameObjects.Arc;
+  label: Phaser.GameObjects.Text;
+  pips: Phaser.GameObjects.Arc[];
+  rect: { x: number; y: number; w: number; h: number };
+  theme: { base: number; dark: number; light: number };
 }
 
 export class GameScene extends Phaser.Scene {
@@ -23,9 +47,26 @@ export class GameScene extends Phaser.Scene {
   private gatiDie!: Phaser.GameObjects.Image;
   private turnBanner!: Phaser.GameObjects.Text;
   private hintText!: Phaser.GameObjects.Text;
-  private playerBadges: { bg: Phaser.GameObjects.Arc; pips: Phaser.GameObjects.Arc[] }[] = [];
   private selectionMode: SelectionMode = 'none';
   private busy = false;
+
+  // Dashboard (sidebar/footer) live elements
+  private playerRows: PlayerRow[] = [];
+  private lastResultText!: Phaser.GameObjects.Text;
+  private movesText!: Phaser.GameObjects.Text;
+  private extraTurnStar!: Phaser.GameObjects.Text;
+  private gatiHighlight!: Phaser.GameObjects.Graphics;
+  private gatiRowY: Partial<Record<GatiName, number>> = {};
+  private gatiRowX = 0;
+  private rollButton!: Button;
+  private movesLeftLabel!: Phaser.GameObjects.Text;
+  private surrenderArmed = false;
+  private surrenderButton!: Button;
+  /** Set synchronously the instant an overlay (Settings/How To Play) opens -
+   * do not rely on Phaser's this.scene.isActive(), which only reflects a
+   * pause() call after it is processed on a later step, not immediately.
+   * See TEST_REPORT.md for the race this closes. */
+  private overlayOpen = false;
 
   constructor() {
     super('Game');
@@ -37,32 +78,49 @@ export class GameScene extends Phaser.Scene {
     this.selectionMode = 'none';
     this.kukriSprites.clear();
     this.halos.clear();
-    this.playerBadges = [];
+    this.playerRows = [];
+    this.gatiRowY = {};
+    this.surrenderArmed = false;
 
     this.engine = new GameEngine({ players: data.players, seed: Date.now() });
 
     this.cameras.main.setBackgroundColor(PALETTE.skyTop);
-    const headerHeight = 150;
-    const footerHeight = 150;
+    const headerHeight = 120;
+    const footerHeight = 140;
     const availableHeight = height - headerHeight - footerHeight;
-    const scale = Math.min(width, availableHeight) / CANVAS.width;
+    const scale = Math.min(width / CANVAS.width, availableHeight / CANVAS.height);
     const boardImg = this.add.image(width / 2, headerHeight + availableHeight / 2, 'board').setScale(scale);
+    const boardDisplayWidth = CANVAS.width * scale;
+    const boardLeft = width / 2 - boardDisplayWidth / 2;
+    const boardRight = width / 2 + boardDisplayWidth / 2;
     new AmbientEnvironment(this, width, height, headerHeight);
     audioManager.ensureStarted();
     audioManager.startAmbientMusic();
 
     // A container that mirrors the board's scale/position so board-space math
-    // (boardPositionFor etc, authored for a 1080x1080 canvas) maps directly.
+    // (boardPositionFor etc) maps directly onto screen pixels.
     this.boardOffsetX = boardImg.x - (CANVAS.width / 2) * scale;
     this.boardOffsetY = boardImg.y - (CANVAS.height / 2) * scale;
     this.boardScale = scale;
 
-    this.createHeaderPanel(headerHeight);
-    this.createPlayerBadges(data.players.length);
+    this.createHeader(headerHeight);
+    this.createSidebars(headerHeight, footerHeight, boardLeft, boardRight, data.players.length);
     this.createKukriSprites();
-    this.createDice();
-    this.createHud();
+    this.createFooter(footerHeight, boardLeft, boardRight);
     this.createPauseButton();
+
+    // If a bot's turn was interrupted mid-flight by an overlay opening (see
+    // the overlayOpen guards in beginTurnUI/runBotEntryStep/runBotMovementStep),
+    // nothing is left scheduled to continue it once we resume - pick it back
+    // up here. Safe to call unconditionally: it just re-checks whose turn it
+    // is and which phase they're in, and is a no-op for a human's turn.
+    this.events.on('resume', () => {
+      this.overlayOpen = false;
+      const player = this.engine.getCurrentPlayer();
+      if (player.isBot && !this.engine.isGameOver()) {
+        this.time.delayedCall(400, () => this.runBotEntryStep());
+      }
+    });
 
     this.beginTurnUI();
   }
@@ -79,42 +137,183 @@ export class GameScene extends Phaser.Scene {
   // Setup
   // ---------------------------------------------------------------------
 
-  private createHeaderPanel(headerHeight: number): void {
+  private createHeader(headerHeight: number): void {
     const { width } = this.scale;
     const panel = this.add.graphics().setDepth(20);
-    panel.fillStyle(PALETTE.plumDeep, 0.55);
-    panel.fillRect(0, 0, width, headerHeight);
-    panel.lineStyle(2, PALETTE.gold, 0.4);
-    panel.lineBetween(0, headerHeight, width, headerHeight);
+    drawOrnatePanel(panel, 8, 8, width - 16, headerHeight - 16, 20);
+
+    this.turnBanner = this.add
+      .text(width / 2, headerHeight * 0.36, '', { fontFamily: 'Trebuchet MS, sans-serif', fontSize: '26px', color: '#fbf3e1', fontStyle: 'bold' })
+      .setOrigin(0.5)
+      .setDepth(21);
+    this.hintText = this.add
+      .text(width / 2, headerHeight * 0.68, '', { fontFamily: 'Trebuchet MS, sans-serif', fontSize: '17px', color: '#ffe28a' })
+      .setOrigin(0.5)
+      .setDepth(21);
   }
 
-  private createPlayerBadges(count: number): void {
-    const { width } = this.scale;
-    const gap = width / (count + 1);
-    for (let p = 0; p < count; p++) {
-      const theme = PLAYER_THEMES[p];
-      const x = gap * (p + 1);
-      const y = 34;
-      const bg = this.add.circle(x, y, 22, theme.base).setStrokeStyle(3, theme.dark).setDepth(21);
+  private createSidebars(headerHeight: number, footerHeight: number, boardLeft: number, boardRight: number, playerCount: number): void {
+    const { width, height } = this.scale;
+    const top = headerHeight + 14;
+    const bottom = height - footerHeight - 14;
+    const leftX = 14;
+    const leftW = Math.max(160, boardLeft - 28);
+    const rightX = boardRight + 14;
+    const rightW = Math.max(160, width - 14 - rightX);
+
+    // ---- Left sidebar: Gati Dice preview + critical-rule reminder ----
+    const leftPanel = this.add.graphics().setDepth(20);
+    drawOrnatePanel(leftPanel, leftX, top, leftW, bottom - top, 22);
+    this.add
+      .text(leftX + leftW / 2, top + 28, 'GATI DICE', { fontFamily: 'Trebuchet MS, sans-serif', fontSize: '19px', color: '#ffe28a', fontStyle: 'bold' })
+      .setOrigin(0.5)
+      .setDepth(21);
+    this.add
+      .text(leftX + leftW / 2, top + 52, 'Choose a Gati', { fontFamily: 'Trebuchet MS, sans-serif', fontSize: '13px', color: '#cbb8e6' })
+      .setOrigin(0.5)
+      .setDepth(21);
+
+    this.gatiHighlight = this.add.graphics().setDepth(21);
+    this.gatiRowX = leftX + leftW / 2;
+    const rowStartY = top + 82;
+    const rowH = 78;
+    GATI_ORDER.forEach((gati, i) => {
+      const rowY = rowStartY + i * rowH;
+      this.gatiRowY[gati] = rowY;
+      const rowBg = this.add.graphics().setDepth(21);
+      rowBg.fillStyle(PALETTE.plum, 0.5);
+      rowBg.fillRoundedRect(leftX + 10, rowY - rowH / 2 + 4, leftW - 20, rowH - 10, 12);
+      const iconBg = this.add.circle(leftX + 34, rowY, 22, PLAYER_THEMES[i].base, 1).setStrokeStyle(2, PALETTE.gold, 0.9).setDepth(22);
+      void iconBg;
+      const iconGfx = this.add.graphics().setDepth(23);
+      drawGatiIcon(iconGfx, gati, leftX + 34, rowY, 13, 0xffffff);
+      this.add
+        .text(leftX + 62, rowY, gati.toUpperCase(), { fontFamily: 'Trebuchet MS, sans-serif', fontSize: '15px', color: '#fbf3e1', fontStyle: 'bold' })
+        .setOrigin(0, 0.5)
+        .setDepth(22);
+    });
+
+    const ruleY = bottom - 92;
+    const ruleBg = this.add.graphics().setDepth(21);
+    ruleBg.fillStyle(0x000000, 0.25);
+    ruleBg.fillRoundedRect(leftX + 10, ruleY, leftW - 20, 84, 12);
+    ruleBg.lineStyle(2, PALETTE.gold, 0.6);
+    ruleBg.strokeRoundedRect(leftX + 10, ruleY, leftW - 20, 84, 12);
+    this.add
+      .text(leftX + leftW / 2, ruleY + 14, 'RULE', { fontFamily: 'Trebuchet MS, sans-serif', fontSize: '13px', color: '#ffe28a', fontStyle: 'bold' })
+      .setOrigin(0.5, 0)
+      .setDepth(22);
+    this.add
+      .text(leftX + leftW / 2, ruleY + 34, 'A Kukri can leave home\nonly when Manushya\nGati is rolled.', {
+        fontFamily: 'Trebuchet MS, sans-serif',
+        fontSize: '12.5px',
+        color: '#fbf3e1',
+        align: 'center',
+      })
+      .setOrigin(0.5, 0)
+      .setDepth(22);
+
+    // ---- Right sidebar: Players, Last Result, Moves, Extra Turn ----
+    const rightPanel = this.add.graphics().setDepth(20);
+    drawOrnatePanel(rightPanel, rightX, top, rightW, bottom - top, 22);
+    this.add
+      .text(rightX + rightW / 2, top + 28, 'PLAYERS', { fontFamily: 'Trebuchet MS, sans-serif', fontSize: '19px', color: '#ffe28a', fontStyle: 'bold' })
+      .setOrigin(0.5)
+      .setDepth(21);
+
+    const players = this.engine.getState().players;
+    const prowStartY = top + 66;
+    const prowH = 58;
+    players.forEach((player, i) => {
+      const theme = PLAYER_THEMES[i];
+      const rowY = prowStartY + i * prowH;
+      const rowRect = { x: rightX + 10, y: rowY - prowH / 2 + 5, w: rightW - 20, h: prowH - 10 };
+      const bg = this.add.graphics().setDepth(21);
+      bg.fillStyle(theme.base, 0.16);
+      bg.fillRoundedRect(rowRect.x, rowRect.y, rowRect.w, rowRect.h, 12);
+      const avatar = this.add.circle(rightX + 34, rowY, 15, theme.base).setStrokeStyle(2, theme.dark).setDepth(22);
+      const label = this.add
+        .text(rightX + 58, rowY - 8, player.isBot ? `Bot ${i + 1} · ${player.botDifficulty}` : `Player ${i + 1}`, {
+          fontFamily: 'Trebuchet MS, sans-serif',
+          fontSize: '13px',
+          color: '#fbf3e1',
+          fontStyle: 'bold',
+        })
+        .setOrigin(0, 0.5)
+        .setDepth(22);
       const pips: Phaser.GameObjects.Arc[] = [];
-      for (let i = 0; i < 4; i++) {
-        const pip = this.add.circle(x - 21 + i * 14, y + 30, 5, 0xffffff, 0.25).setStrokeStyle(1, theme.dark, 0.6).setDepth(21);
+      for (let k = 0; k < 4; k++) {
+        const pip = this.add.circle(rightX + 60 + k * 13, rowY + 12, 4, 0xffffff, 0.25).setStrokeStyle(1, theme.dark, 0.6).setDepth(22);
         pips.push(pip);
       }
-      this.playerBadges.push({ bg, pips });
-    }
-    this.refreshBadges();
+      this.playerRows.push({ bg, avatar, label, pips, rect: rowRect, theme });
+    });
+    void playerCount;
+
+    const boxY = prowStartY + players.length * prowH + 14;
+    const boxH = 56;
+    const drawInfoBox = (y: number, heading: string): Phaser.GameObjects.Text => {
+      const box = this.add.graphics().setDepth(21);
+      box.fillStyle(0x000000, 0.25);
+      box.fillRoundedRect(rightX + 10, y, rightW - 20, boxH, 12);
+      box.lineStyle(2, PALETTE.gold, 0.5);
+      box.strokeRoundedRect(rightX + 10, y, rightW - 20, boxH, 12);
+      this.add
+        .text(rightX + rightW / 2, y + 12, heading, { fontFamily: 'Trebuchet MS, sans-serif', fontSize: '12px', color: '#ffe28a', fontStyle: 'bold' })
+        .setOrigin(0.5, 0)
+        .setDepth(22);
+      return this.add
+        .text(rightX + rightW / 2, y + 34, '-', { fontFamily: 'Trebuchet MS, sans-serif', fontSize: '16px', color: '#fbf3e1', fontStyle: 'bold' })
+        .setOrigin(0.5, 0)
+        .setDepth(22);
+    };
+    this.lastResultText = drawInfoBox(boxY, 'LAST RESULT');
+    this.movesText = drawInfoBox(boxY + boxH + 10, 'MOVES');
+
+    const starY = boxY + (boxH + 10) * 2 + 6;
+    const starBox = this.add.graphics().setDepth(21);
+    starBox.fillStyle(0x000000, 0.25);
+    starBox.fillRoundedRect(rightX + 10, starY, rightW - 20, boxH, 12);
+    starBox.lineStyle(2, PALETTE.gold, 0.5);
+    starBox.strokeRoundedRect(rightX + 10, starY, rightW - 20, boxH, 12);
+    this.add
+      .text(rightX + rightW / 2, starY + 10, 'EXTRA TURN', { fontFamily: 'Trebuchet MS, sans-serif', fontSize: '12px', color: '#ffe28a', fontStyle: 'bold' })
+      .setOrigin(0.5, 0)
+      .setDepth(22);
+    this.extraTurnStar = this.add
+      .text(rightX + rightW / 2, starY + 30, '★', { fontSize: '20px', color: '#6a5a86' })
+      .setOrigin(0.5, 0)
+      .setDepth(22);
+
+    this.refreshSidebars();
   }
 
-  private refreshBadges(): void {
+  private refreshSidebars(): void {
     const state = this.engine.getState();
-    state.players.forEach((player, p) => {
-      const badge = this.playerBadges[p];
-      badge.bg.setStrokeStyle(p === state.currentPlayerIndex ? 5 : 3, PALETTE.gold, p === state.currentPlayerIndex ? 1 : 0.6);
-      badge.pips.forEach((pip, i) => {
-        pip.setFillStyle(i < player.finishedCount ? PALETTE.gold : 0xffffff, i < player.finishedCount ? 1 : 0.25);
-      });
+    state.players.forEach((player, i) => {
+      const row = this.playerRows[i];
+      if (!row) return;
+      const isCurrent = i === state.currentPlayerIndex;
+      row.avatar.setStrokeStyle(isCurrent ? 4 : 2, PALETTE.gold, isCurrent ? 1 : 0.7);
+      row.pips.forEach((pip, k) => pip.setFillStyle(k < player.finishedCount ? PALETTE.gold : 0xffffff, k < player.finishedCount ? 1 : 0.25));
+      row.bg.clear();
+      row.bg.fillStyle(row.theme.base, isCurrent ? 0.38 : 0.14);
+      row.bg.fillRoundedRect(row.rect.x, row.rect.y, row.rect.w, row.rect.h, 12);
+      if (isCurrent) {
+        row.bg.lineStyle(2, PALETTE.goldBright, 0.9);
+        row.bg.strokeRoundedRect(row.rect.x, row.rect.y, row.rect.w, row.rect.h, 12);
+      }
     });
+    this.updateGatiHighlight(undefined);
+  }
+
+  private updateGatiHighlight(active: GatiName | undefined): void {
+    this.gatiHighlight.clear();
+    if (!active) return;
+    const y = this.gatiRowY[active];
+    if (y === undefined) return;
+    this.gatiHighlight.lineStyle(3, PALETTE.goldBright, 1);
+    this.gatiHighlight.strokeRoundedRect(this.gatiRowX - 190 / 2 + 0, y - 34, 190, 68, 14);
   }
 
   private createKukriSprites(): void {
@@ -125,7 +324,8 @@ export class GameScene extends Phaser.Scene {
         const img = this.add
           .image(pos.x, pos.y, kukriTextureKey(player.index, kukri.gati))
           .setScale(this.boardScale)
-          .setDepth(10);
+          .setDepth(10)
+          .setInteractive({ useHandCursor: true });
         img.on('pointerdown', () => this.onKukriClicked(kukri.id));
         this.kukriSprites.set(kukri.id, img);
       });
@@ -148,54 +348,100 @@ export class GameScene extends Phaser.Scene {
     return this.toScreen(p.x, p.y);
   }
 
-  private createDice(): void {
+  private createFooter(footerHeight: number, boardLeft: number, boardRight: number): void {
     const { width, height } = this.scale;
-    const footerHeight = 150;
+    const barY = height - footerHeight;
     const panel = this.add.graphics().setDepth(20);
-    panel.fillStyle(PALETTE.plumDeep, 0.55);
-    panel.fillRect(0, height - footerHeight, width, footerHeight);
-    panel.lineStyle(2, PALETTE.gold, 0.4);
-    panel.lineBetween(0, height - footerHeight, width, height - footerHeight);
+    drawOrnatePanel(panel, 8, barY + 8, width - 16, footerHeight - 16, 20);
 
-    const dieY = height - footerHeight / 2 - 6;
-    this.gatiDie = this.add
-      .image(width / 2 - 90, dieY, dieGatiKey('Dev'))
-      .setScale(0.55)
-      .setDepth(21)
-      .setInteractive({ useHandCursor: true })
-      .on('pointerup', () => this.onGatiDieClicked());
-    this.normalDie = this.add
-      .image(width / 2 + 90, dieY, dieNormalKey(1))
-      .setScale(0.55)
-      .setDepth(21)
-      .setInteractive({ useHandCursor: true })
-      .on('pointerup', () => this.onNormalDieClicked());
+    const midY = barY + footerHeight / 2;
+
+    // Dice display panel, center - purely visual; the ROLL button is the
+    // single action trigger (matches a "press ROLL" flow, not tiny die taps).
+    const diceBoxW = 260;
+    const diceBox = this.add.graphics().setDepth(21);
+    diceBox.fillStyle(PALETTE.plum, 0.5);
+    diceBox.fillRoundedRect(width / 2 - diceBoxW / 2, barY + 10, diceBoxW, footerHeight - 20, 14);
+    diceBox.lineStyle(2, PALETTE.gold, 0.7);
+    diceBox.strokeRoundedRect(width / 2 - diceBoxW / 2, barY + 10, diceBoxW, footerHeight - 20, 14);
+
+    this.gatiDie = this.add.image(width / 2 - 55, midY, dieGatiKey('Dev')).setScale(0.42).setDepth(22);
+    this.normalDie = this.add.image(width / 2 + 55, midY, dieNormalKey(1)).setScale(0.42).setDepth(22);
+    this.movesLeftLabel = this.add
+      .text(width / 2, barY + footerHeight - 16, '', { fontFamily: 'Trebuchet MS, sans-serif', fontSize: '12px', color: '#cbb8e6' })
+      .setOrigin(0.5, 1)
+      .setDepth(22);
+
+    this.rollButton = new Button(this, width / 2, barY - 34, 'ROLL', () => this.onRollClicked(), {
+      variant: 'primary',
+      width: 170,
+      height: 56,
+      fontSize: 24,
+    });
+    this.rollButton.setDepth(23);
+
+    new Button(this, (boardLeft + 8) / 2 + 8, midY, 'HOW TO\nPLAY', () => this.openHowToPlay(), {
+      variant: 'secondary',
+      width: Math.max(120, boardLeft - 24),
+      height: footerHeight - 24,
+      fontSize: 16,
+    }).setDepth(21);
+
+    this.surrenderButton = new Button(
+      this,
+      boardRight + (width - boardRight) / 2 - 8,
+      midY,
+      'SURRENDER',
+      () => this.onSurrenderClicked(),
+      { variant: 'secondary', width: Math.max(120, width - boardRight - 24), height: footerHeight - 24, fontSize: 16 },
+    );
+    this.surrenderButton.setDepth(21);
   }
 
-  private createHud(): void {
-    const { width } = this.scale;
-    this.turnBanner = this.add
-      .text(width / 2, 108, '', { fontFamily: 'Trebuchet MS, sans-serif', fontSize: '22px', color: '#fbf3e1', fontStyle: 'bold' })
-      .setOrigin(0.5)
-      .setDepth(21);
-    this.hintText = this.add
-      .text(width / 2, 134, '', { fontFamily: 'Trebuchet MS, sans-serif', fontSize: '16px', color: '#f4cf8a' })
-      .setOrigin(0.5)
-      .setDepth(21);
+  private openHowToPlay(): void {
+    this.overlayOpen = true;
+    this.scene.pause();
+    this.scene.launch('HowToPlay', { returnTo: 'Game' });
+  }
+
+  private onSurrenderClicked(): void {
+    if (!this.surrenderArmed) {
+      this.surrenderArmed = true;
+      this.surrenderButton.setLabel('TAP AGAIN\nTO CONFIRM');
+      this.time.delayedCall(3000, () => {
+        if (this.surrenderArmed) {
+          this.surrenderArmed = false;
+          this.surrenderButton.setLabel('SURRENDER');
+        }
+      });
+      return;
+    }
+    audioManager.stopAmbientMusic();
+    this.scene.start('MainMenu');
+  }
+
+  private openSettings(): void {
+    this.overlayOpen = true;
+    // Pause (not stop) so the in-progress match and its state are fully
+    // preserved - Settings launches as an overlay on top and resumes us.
+    this.scene.pause();
+    this.scene.launch('Settings', { returnTo: 'Game' });
   }
 
   private createPauseButton(): void {
     const gear = this.add
-      .text(this.scale.width - 32, 32, '⚙', { fontSize: '28px', color: '#fbf3e1' })
+      .text(this.scale.width - 40, 30, '⚙', { fontSize: '30px', color: '#fbf3e1' })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true })
-      .on('pointerup', () => {
-        // Pause (not stop) so the in-progress match and its state are fully
-        // preserved - Settings launches as an overlay on top and resumes us.
-        this.scene.pause();
-        this.scene.launch('Settings', { returnTo: 'Game' });
-      });
+      .on('pointerup', () => this.openSettings());
     gear.setDepth(50);
+
+    const hamburger = this.add
+      .text(40, 30, '☰', { fontSize: '28px', color: '#fbf3e1' })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true })
+      .on('pointerup', () => this.openSettings());
+    hamburger.setDepth(50);
   }
 
   private toast(message: string): void {
@@ -220,8 +466,11 @@ export class GameScene extends Phaser.Scene {
   // ---------------------------------------------------------------------
 
   private beginTurnUI(): void {
+    if (this.overlayOpen) return;
     this.clearHighlights();
-    this.refreshBadges();
+    this.refreshSidebars();
+    this.surrenderArmed = false;
+    this.surrenderButton.setLabel('SURRENDER');
     if (this.engine.isGameOver()) {
       this.onGameOver();
       return;
@@ -232,7 +481,8 @@ export class GameScene extends Phaser.Scene {
     this.turnBanner.setColor(intToHex(theme.base));
     audioManager.playSfx('turnChange');
 
-    this.setDiceEnabled(false, false);
+    this.setRollEnabled(false);
+    this.movesLeftLabel.setText('');
     this.busy = false;
 
     if (player.isBot) {
@@ -241,19 +491,17 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (this.engine.getState().phase === 'ENTRY') {
-      this.hintText.setText('Roll the Gati Pasa - only Manushya brings a Kukri out.');
-      this.setDiceEnabled(true, false);
+      this.hintText.setText('Gati Dice: choose a Kukri only if Manushya is rolled');
+      this.setRollEnabled(true, 'ROLL GATI');
     } else {
-      this.hintText.setText('Roll the Normal Pasa to move.');
-      this.setDiceEnabled(false, true);
+      this.hintText.setText('Roll to move a Kukri');
+      this.setRollEnabled(true, 'ROLL');
     }
   }
 
-  private setDiceEnabled(gati: boolean, normal: boolean): void {
-    this.gatiDie.setAlpha(gati ? 1 : 0.4);
-    this.normalDie.setAlpha(normal ? 1 : 0.4);
-    if (gati) this.gatiDie.setInteractive(); else this.gatiDie.disableInteractive();
-    if (normal) this.normalDie.setInteractive(); else this.normalDie.disableInteractive();
+  private setRollEnabled(enabled: boolean, label?: string): void {
+    this.rollButton.setDisabled(!enabled);
+    if (label) this.rollButton.setLabel(label);
   }
 
   private clearHighlights(): void {
@@ -285,51 +533,78 @@ export class GameScene extends Phaser.Scene {
   // Human input handlers
   // ---------------------------------------------------------------------
 
-  private onGatiDieClicked(): void {
+  private onRollClicked(): void {
     if (this.busy || this.engine.getCurrentPlayer().isBot) return;
-    if (this.engine.getState().phase !== 'ENTRY' || this.engine.getState().gatiRolledThisInstance) return;
+    const state = this.engine.getState();
+    if (state.phase === 'ENTRY' && !state.gatiRolledThisInstance) {
+      this.rollGati();
+    } else if (state.phase === 'MOVEMENT' && !state.entryChoicePending && !state.normalRolledThisInstance) {
+      this.rollNormal();
+    }
+  }
+
+  private rollGati(): void {
     this.busy = true;
-    this.setDiceEnabled(false, false);
+    this.setRollEnabled(false);
     const result = this.engine.rollGatiPasa();
     if (!result.ok) {
       this.busy = false;
+      this.setRollEnabled(true);
       return;
     }
+    this.lastResultText.setText(result.result);
+    this.updateGatiHighlight(result.result);
     this.animateGatiDie(result.result, () => {
       if (result.enteredAutoSkipped) {
-        this.hintText.setText('No entry this time. Roll the Normal Pasa.');
+        this.hintText.setText('No entry this time - roll to move');
         this.busy = false;
-        this.setDiceEnabled(false, true);
+        this.setRollEnabled(true, 'ROLL');
       } else {
         const player = this.engine.getCurrentPlayer();
         const yardIds = player.kukris.filter((k) => k.state === 'YARD').map((k) => k.id);
-        this.hintText.setText('Manushya! Choose a Kukri to bring out.');
+        this.hintText.setText('Manushya! Tap a Kukri in your home to bring it out.');
         this.highlightSelectable(yardIds, 'entry');
         this.busy = false;
       }
     });
   }
 
-  private onNormalDieClicked(): void {
-    if (this.busy || this.engine.getCurrentPlayer().isBot) return;
-    if (this.engine.getState().phase !== 'MOVEMENT' || this.engine.getState().entryChoicePending || this.engine.getState().normalRolledThisInstance) return;
+  private rollNormal(): void {
     this.busy = true;
-    this.setDiceEnabled(false, false);
+    this.setRollEnabled(false);
     const result = this.engine.rollNormalPasa();
     if (!result.ok) {
       this.busy = false;
+      this.setRollEnabled(true);
       return;
     }
+    this.lastResultText.setText(`${result.roll}`);
+    this.movesText.setText(`${result.roll}`);
+    this.movesLeftLabel.setText(`Moves Left: ${result.roll}`);
+    if (result.roll === 6) this.flashExtraTurn();
     this.animateNormalDie(result.roll, () => {
       if (result.turnPassed) {
         this.toast(result.legalMoveKukriIds.length === 0 ? 'No legal move.' : 'Turn passed.');
         this.busy = false;
         this.time.delayedCall(500, () => this.beginTurnUI());
       } else {
-        this.hintText.setText('Choose a Kukri to move.');
+        this.hintText.setText('Tap a highlighted Kukri to move it');
         this.highlightSelectable(result.legalMoveKukriIds, 'move');
         this.busy = false;
       }
+    });
+  }
+
+  private flashExtraTurn(): void {
+    this.extraTurnStar.setColor('#ffe28a');
+    this.tweens.add({
+      targets: this.extraTurnStar,
+      scale: { from: 1, to: 1.6 },
+      duration: 300,
+      yoyo: true,
+      repeat: 1,
+      ease: 'Sine.easeOut',
+      onComplete: () => this.extraTurnStar.setColor('#6a5a86'),
     });
   }
 
@@ -346,8 +621,8 @@ export class GameScene extends Phaser.Scene {
       }
       this.animateKukriEnter(kukriId, () => {
         this.busy = false;
-        this.hintText.setText('Roll the Normal Pasa.');
-        this.setDiceEnabled(false, true);
+        this.hintText.setText('Roll to move a Kukri');
+        this.setRollEnabled(true, 'ROLL');
       });
     } else if (this.selectionMode === 'move') {
       if (!this.halos.has(kukriId)) return;
@@ -358,6 +633,7 @@ export class GameScene extends Phaser.Scene {
         this.busy = false;
         return;
       }
+      if (result.bonusEarned) this.flashExtraTurn();
       this.animateMove(result, () => {
         this.busy = false;
         if (result.gameOver) this.onGameOver();
@@ -371,10 +647,17 @@ export class GameScene extends Phaser.Scene {
   // ---------------------------------------------------------------------
 
   private runBotEntryStep(): void {
+    // Defensive guard: if Settings/How-To-Play is open, never let a bot's
+    // already-scheduled step mutate engine state or animate behind the
+    // overlay. See the overlayOpen field doc comment for why this checks a
+    // manual flag rather than this.scene.isActive().
+    if (this.overlayOpen) return;
     const player = this.engine.getCurrentPlayer();
     if (this.engine.getState().phase === 'ENTRY') {
       const result = this.engine.rollGatiPasa();
       if (!result.ok) return;
+      this.lastResultText.setText(result.result);
+      this.updateGatiHighlight(result.result);
       this.animateGatiDie(result.result, () => {
         if (result.enteredAutoSkipped) {
           this.time.delayedCall(300, () => this.runBotMovementStep());
@@ -394,10 +677,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   private runBotMovementStep(): void {
+    if (this.overlayOpen) return;
     const player = this.engine.getCurrentPlayer();
     const difficulty = player.botDifficulty ?? 'medium';
     const result = this.engine.rollNormalPasa();
     if (!result.ok) return;
+    this.lastResultText.setText(`${result.roll}`);
+    this.movesText.setText(`${result.roll}`);
+    this.movesLeftLabel.setText(`Moves Left: ${result.roll}`);
+    if (result.roll === 6) this.flashExtraTurn();
     this.animateNormalDie(result.roll, () => {
       if (result.turnPassed) {
         this.time.delayedCall(400, () => this.beginTurnUI());
@@ -409,6 +697,7 @@ export class GameScene extends Phaser.Scene {
         this.time.delayedCall(400, () => this.beginTurnUI());
         return;
       }
+      if (move.bonusEarned) this.flashExtraTurn();
       this.animateMove(move, () => {
         if (move.gameOver) this.onGameOver();
         else this.beginTurnUI();

@@ -9,14 +9,25 @@ export interface InfoPage {
 }
 
 /** Shared paginated text+visual layout used by both How To Play and Rules. */
+export interface PagedInfoData {
+  /** When set to 'Game', opens as an overlay on top of the paused Game
+   * scene - the "back" button resumes it instead of going to Main Menu, so
+   * opening How To Play / Rules mid-match never loses game state. */
+  returnTo?: 'Game';
+}
+
 export abstract class PagedInfoScene extends Phaser.Scene {
   private pageIndex = 0;
   private pageContent: Phaser.GameObjects.GameObject[] = [];
   private dots: Phaser.GameObjects.Arc[] = [];
+  private returnTo?: 'Game';
   protected abstract getPages(): InfoPage[];
   protected abstract getHeading(): string;
 
-  create(): void {
+  create(data?: PagedInfoData): void {
+    this.returnTo = data?.returnTo;
+    if (this.returnTo === 'Game') this.scene.bringToTop();
+
     const { width, height } = this.scale;
     this.cameras.main.setBackgroundColor(PALETTE.skyTop);
     this.add.image(width / 2, height / 2, 'board').setDisplaySize(width, height).setAlpha(0.4).setDepth(-20);
@@ -33,7 +44,22 @@ export abstract class PagedInfoScene extends Phaser.Scene {
     this.pageIndex = 0;
     this.renderPage();
 
-    new Button(this, 90, height - 40, 'BACK', () => this.scene.start('MainMenu'), { variant: 'ghost', width: 140, height: 48, fontSize: 18 });
+    const backLabel = this.returnTo === 'Game' ? 'RESUME' : 'BACK';
+    new Button(
+      this,
+      90,
+      height - 40,
+      backLabel,
+      () => {
+        if (this.returnTo === 'Game') {
+          this.scene.resume('Game');
+          this.scene.stop();
+        } else {
+          this.scene.start('MainMenu');
+        }
+      },
+      { variant: this.returnTo === 'Game' ? 'primary' : 'ghost', width: 140, height: 48, fontSize: 18 },
+    );
     new Button(this, width - 130, height - 40, 'NEXT ›', () => this.changePage(1), { variant: 'secondary', width: 160, height: 48, fontSize: 18 });
     new Button(this, width - 300, height - 40, '‹ PREV', () => this.changePage(-1), { variant: 'secondary', width: 140, height: 48, fontSize: 18 });
   }
