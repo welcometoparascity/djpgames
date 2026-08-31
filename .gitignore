@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+FINAL_BUILD/
+Jain-Ludo-Hostinger.zip
+Jain-Ludo-Source.zip
