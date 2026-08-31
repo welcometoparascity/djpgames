@@ -189,7 +189,12 @@ export class GameScene extends Phaser.Scene {
       .text(this.scale.width - 32, 32, '⚙', { fontSize: '28px', color: '#fbf3e1' })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true })
-      .on('pointerup', () => this.scene.start('Settings'));
+      .on('pointerup', () => {
+        // Pause (not stop) so the in-progress match and its state are fully
+        // preserved - Settings launches as an overlay on top and resumes us.
+        this.scene.pause();
+        this.scene.launch('Settings', { returnTo: 'Game' });
+      });
     gear.setDepth(50);
   }
 

@@ -16,7 +16,7 @@ export class VictoryScene extends Phaser.Scene {
     const { width, height } = this.scale;
     const theme = PLAYER_THEMES[data.winnerIndex ?? 0];
     this.cameras.main.setBackgroundColor(PALETTE.skyTop);
-    this.add.image(width / 2, height / 2, 'board').setDisplaySize(width, height).setAlpha(0.3).setDepth(-20);
+    this.add.image(width / 2, height / 2, 'board').setDisplaySize(width, height).setAlpha(0.45).setDepth(-20);
 
     audioManager.stopAmbientMusic();
 

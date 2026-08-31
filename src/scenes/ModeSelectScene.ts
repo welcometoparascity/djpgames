@@ -31,7 +31,7 @@ export class ModeSelectScene extends Phaser.Scene {
   create(): void {
     const { width, height } = this.scale;
     this.cameras.main.setBackgroundColor(PALETTE.skyTop);
-    this.add.image(width / 2, height / 2, 'board').setDisplaySize(width, height).setAlpha(0.35).setDepth(-20);
+    this.add.image(width / 2, height / 2, 'board').setDisplaySize(width, height).setAlpha(0.55).setDepth(-20);
 
     this.add
       .text(width / 2, 60, 'CHOOSE YOUR MATCH', {

@@ -12,7 +12,7 @@ export class MainMenuScene extends Phaser.Scene {
   create(): void {
     const { width, height } = this.scale;
     this.cameras.main.setBackgroundColor(PALETTE.skyTop);
-    this.add.image(width / 2, height / 2, 'board').setDisplaySize(width, height).setAlpha(0.5).setDepth(-20);
+    this.add.image(width / 2, height / 2, 'board').setDisplaySize(width, height).setAlpha(0.7).setDepth(-20);
     new AmbientEnvironment(this, width, height);
 
     audioManager.ensureStarted();

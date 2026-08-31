@@ -72,23 +72,28 @@ export class TextureFactory {
       for (const gati of GATI_ORDER) {
         g.clear();
         // Soft shadow
-        g.fillStyle(0x000000, 0.22);
+        g.fillStyle(0x000000, 0.28);
         g.fillEllipse(cx, cy + size * 0.32, size * 0.68, size * 0.22);
         // Outer ring (dark shade)
         g.fillStyle(theme.dark, 1);
-        g.fillCircle(cx, cy, size * 0.42);
-        // Gem body (base color)
+        g.fillCircle(cx, cy, size * 0.44);
+        // Gem body (base color) with a layered radial highlight for a glossy,
+        // premium "polished token" look rather than a flat disc.
         g.fillStyle(theme.base, 1);
-        g.fillCircle(cx, cy, size * 0.36);
-        // Inner highlight gradient approximation (layered lighter circle offset up-left)
-        g.fillStyle(theme.light, 0.55);
-        g.fillCircle(cx - size * 0.08, cy - size * 0.1, size * 0.22);
-        // Thin gold accent ring
-        g.lineStyle(2, PALETTE.gold, 0.9);
+        g.fillCircle(cx, cy, size * 0.37);
+        for (let ring = 5; ring >= 1; ring--) {
+          const t = ring / 5;
+          g.fillStyle(theme.light, 0.16 + (1 - t) * 0.3);
+          g.fillCircle(cx - size * 0.06 * t, cy - size * 0.08 * t, size * 0.3 * t);
+        }
+        // Bright gold accent ring
+        g.lineStyle(3, PALETTE.gold, 1);
         g.strokeCircle(cx, cy, size * 0.4);
-        // Gloss highlight
-        g.fillStyle(0xffffff, 0.35);
-        g.fillEllipse(cx - size * 0.12, cy - size * 0.16, size * 0.22, size * 0.12);
+        // Crisp gloss highlight (glassy toy/character sheen)
+        g.fillStyle(0xffffff, 0.55);
+        g.fillEllipse(cx - size * 0.12, cy - size * 0.17, size * 0.2, size * 0.11);
+        g.fillStyle(0xffffff, 0.85);
+        g.fillCircle(cx - size * 0.15, cy - size * 0.2, size * 0.045);
         // Gati icon badge
         drawGatiIcon(g, gati, cx, cy, size * 0.17, GATI_ICON_COLOR);
 
@@ -310,11 +315,13 @@ export class TextureFactory {
     for (let p = 0; p < 4; p++) {
       const theme = PLAYER_THEMES[p];
       const rect = yardRectFor(p);
-      g.fillStyle(0x000000, 0.18);
+      g.fillStyle(0x000000, 0.22);
       g.fillRoundedRect(rect.x + 4, rect.y + 6, rect.width, rect.height, 24);
-      g.fillStyle(theme.base, 0.24);
+      g.fillStyle(theme.base, 0.9);
       g.fillRoundedRect(rect.x, rect.y, rect.width, rect.height, 24);
-      g.lineStyle(5, theme.dark, 0.9);
+      g.fillStyle(theme.light, 0.35);
+      g.fillRoundedRect(rect.x, rect.y, rect.width, rect.height * 0.4, 24);
+      g.lineStyle(6, theme.dark, 1);
       g.strokeRoundedRect(rect.x, rect.y, rect.width, rect.height, 24);
       // Inner white plaque holding the 4 kukri slots, classic Ludo yard look.
       const plaqueMargin = rect.width * 0.16;

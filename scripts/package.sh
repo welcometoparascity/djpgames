@@ -8,9 +8,10 @@ cd "$(dirname "$0")/.."
 echo "==> Type-check + build"
 npm run build
 
-echo "==> Packaging Jain-Ludo-Hostinger.zip"
-rm -f Jain-Ludo-Hostinger.zip
+echo "==> Packaging Jain-Ludo-Hostinger.zip / Jain-Ludo-Final.zip"
+rm -f Jain-Ludo-Hostinger.zip Jain-Ludo-Final.zip
 (cd dist && zip -r -q ../Jain-Ludo-Hostinger.zip .)
+cp Jain-Ludo-Hostinger.zip Jain-Ludo-Final.zip
 
 echo "==> Packaging Jain-Ludo-Source.zip"
 rm -f Jain-Ludo-Source.zip

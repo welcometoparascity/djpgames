@@ -19,7 +19,7 @@ export abstract class PagedInfoScene extends Phaser.Scene {
   create(): void {
     const { width, height } = this.scale;
     this.cameras.main.setBackgroundColor(PALETTE.skyTop);
-    this.add.image(width / 2, height / 2, 'board').setDisplaySize(width, height).setAlpha(0.25).setDepth(-20);
+    this.add.image(width / 2, height / 2, 'board').setDisplaySize(width, height).setAlpha(0.4).setDepth(-20);
 
     this.add
       .text(width / 2, 46, this.getHeading(), {
