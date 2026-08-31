@@ -50,7 +50,10 @@ function isThreatened(engine: GameEngine, actor: Player, kukri: Kukri): boolean 
   return false;
 }
 
-function chooseYardKukriToEnter(player: Player): string {
+/** Pure decision helper (no engine mutation) - exposed so the rendering layer
+ * can drive bot turns through the same animated action pipeline used for
+ * humans, rather than the opaque takeBotTurn() batch helper. */
+export function decideYardKukriToEnter(player: Player): string {
   const yardKukris = player.kukris.filter((k) => k.state === 'YARD');
   // Mechanically all yard Kukri are identical once entered (Gati is cosmetic
   // only — see GAME_RULES.md §3.2), so the choice has no strategic weight.
@@ -89,7 +92,8 @@ function chooseMoveHard(engine: GameEngine, actor: Player, legalIds: string[], r
   return best.id;
 }
 
-function chooseMove(engine: GameEngine, actor: Player, legalIds: string[], roll: number, difficulty: BotDifficulty): string {
+/** Pure decision helper (no engine mutation) - see decideYardKukriToEnter doc. */
+export function decideMove(engine: GameEngine, actor: Player, legalIds: string[], roll: number, difficulty: BotDifficulty): string {
   if (legalIds.length === 1) return legalIds[0];
   switch (difficulty) {
     case 'easy':
@@ -126,7 +130,7 @@ export function takeBotTurn(engine: GameEngine): BotTurnLog {
     if (gati.ok) {
       result.gatiResult = gati.result;
       if (!gati.enteredAutoSkipped) {
-        const kukriId = chooseYardKukriToEnter(player);
+        const kukriId = decideYardKukriToEnter(player);
         const entry = engine.chooseEntryKukri(kukriId);
         if (entry.ok) result.enteredKukriId = kukriId;
       }
@@ -138,7 +142,7 @@ export function takeBotTurn(engine: GameEngine): BotTurnLog {
     result.normalRoll = normal.roll;
     result.turnPassed = normal.turnPassed;
     if (!normal.turnPassed && normal.legalMoveKukriIds.length > 0) {
-      const chosenId = chooseMove(engine, player, normal.legalMoveKukriIds, normal.roll, difficulty);
+      const chosenId = decideMove(engine, player, normal.legalMoveKukriIds, normal.roll, difficulty);
       const move = engine.moveKukri(chosenId);
       if (move.ok) result.movedKukriId = chosenId;
     }
